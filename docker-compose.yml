@@ -1,0 +1,22 @@
+# Optional: a real Postgres instance for the production-style datasource
+# path. Local dev works without this (SQLite, zero setup) — see
+# docs/architecture.md. To switch:
+#   1. docker compose up -d
+#   2. Edit prisma/schema.prisma: datasource provider "sqlite" -> "postgresql"
+#   3. Set DATABASE_URL below in your .env
+#   4. npx prisma migrate dev
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trustledger
+      POSTGRES_PASSWORD: trustledger
+      POSTGRES_DB: trustledger
+    ports:
+      - "5432:5432"
+    volumes:
+      - trustledger-postgres:/var/lib/postgresql/data
+
+volumes:
+  trustledger-postgres:
