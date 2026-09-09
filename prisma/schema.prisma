@@ -1,0 +1,378 @@
+// TrustLedger financial domain model.
+// Dev datasource is SQLite (file:./dev.db) for zero-friction local runs.
+// See docker-compose.yml + docs/architecture.md for the PostgreSQL production path —
+// the schema below avoids SQLite-incompatible features (native enums, arrays) so the
+// datasource provider can be swapped to "postgresql" without model changes.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & access
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  currency  String   @default("INR")
+  createdAt DateTime @default(now())
+
+  users             User[]
+  accounts          Account[]
+  transactions      Transaction[]
+  customers         Customer[]
+  suppliers         Supplier[]
+  invoices          Invoice[]
+  expenses          Expense[]
+  recurringExpenses RecurringExpense[]
+  metrics           FinancialMetric[]
+  forecasts         Forecast[]
+  riskAssessments   RiskAssessment[]
+  anomalies         Anomaly[]
+  scenarios         Scenario[]
+  insights          AIInsight[]
+  approvals         Approval[]
+  auditEvents       AuditEvent[]
+}
+
+// Role determines what a user can do — enforced in src/lib/auth/rbac.ts.
+enum Role {
+  OWNER
+  ACCOUNTANT
+  ANALYST
+  ADMIN
+}
+
+model User {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  name           String
+  email          String       @unique
+  passwordHash   String
+  role           Role
+  createdAt      DateTime     @default(now())
+
+  approvals   Approval[]
+  auditEvents AuditEvent[]
+}
+
+// ---------------------------------------------------------------------------
+// Ledger primitives
+// ---------------------------------------------------------------------------
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+  CASH
+}
+
+model Account {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  name           String
+  type           AccountType
+  openingBalance Float        @default(0)
+
+  transactions Transaction[]
+}
+
+enum TransactionType {
+  INFLOW
+  OUTFLOW
+}
+
+// Cash-flow statement classification (operating / investing / financing).
+enum CashFlowClass {
+  OPERATING
+  INVESTING
+  FINANCING
+}
+
+enum CounterpartyType {
+  CUSTOMER
+  SUPPLIER
+  EMPLOYEE
+  OTHER
+}
+
+// RAW FACT + CLASSIFICATION layers live on one row for simplicity in this
+// prototype, but the fields are kept distinct: date/amount/description/
+// counterparty are the raw fact; category/cashFlowClass/isAnomaly are the
+// system's classification of that fact. AI never writes these fields
+// directly — see AIInsight/EvidenceLink for the AI interpretation layer.
+model Transaction {
+  id             String            @id @default(cuid())
+  organizationId String
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+  accountId      String
+  account        Account           @relation(fields: [accountId], references: [id])
+  date           DateTime
+  description    String
+  amount         Float
+  type           TransactionType
+  cashFlowClass  CashFlowClass
+  category       String
+  counterpartyType CounterpartyType
+  // Polymorphic reference (Customer.id, Supplier.id, or free text) — no DB-level FK
+  // since it can point at different tables depending on counterpartyType.
+  counterpartyId String?
+  reference      String?
+  isDuplicateOf  String?
+  isAnomaly      Boolean           @default(false)
+  categorySource String            @default("RULE") // RULE | ML | HUMAN
+  categoryConfidence Float         @default(1)
+  createdAt      DateTime          @default(now())
+
+  evidenceLinks EvidenceLink[]
+  anomalies     Anomaly[]
+
+  @@index([organizationId, date])
+  @@index([organizationId, category])
+}
+
+model Customer {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  name           String
+  segment        String       @default("General")
+  createdAt      DateTime     @default(now())
+
+  invoices     Invoice[]
+}
+
+model Supplier {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  name           String
+  category       String       @default("General")
+  createdAt      DateTime     @default(now())
+
+  expenses Expense[]
+}
+
+enum InvoiceStatus {
+  OPEN
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  customerId     String
+  customer       Customer      @relation(fields: [customerId], references: [id])
+  invoiceNumber  String
+  issueDate      DateTime
+  dueDate        DateTime
+  amount         Float
+  paidAmount     Float         @default(0)
+  status         InvoiceStatus @default(OPEN)
+
+  payments InvoicePayment[]
+
+  @@index([organizationId, status])
+}
+
+model InvoicePayment {
+  id        String   @id @default(cuid())
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id])
+  amount    Float
+  paidAt    DateTime
+}
+
+model Expense {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  supplierId     String?
+  supplier       Supplier?    @relation(fields: [supplierId], references: [id])
+  category       String
+  date           DateTime
+  amount         Float
+  dueDate        DateTime?
+  paid           Boolean      @default(true)
+
+  @@index([organizationId, date])
+}
+
+model RecurringExpense {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  name           String
+  category       String
+  amount         Float
+  frequency      String // MONTHLY | WEEKLY
+  nextDueDate    DateTime
+}
+
+// ---------------------------------------------------------------------------
+// Analytics outputs (all deterministic — see packages/analytics)
+// ---------------------------------------------------------------------------
+
+model FinancialMetric {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  periodStart    DateTime
+  periodEnd      DateTime
+  key            String // e.g. REVENUE, EXPENSES, NET_CASH_FLOW, HEALTH_SCORE
+  value          Float
+  metadata       String? // JSON blob of supporting detail
+
+  @@index([organizationId, key, periodStart])
+}
+
+model Forecast {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  generatedAt    DateTime     @default(now())
+  horizonDays    Int
+  method         String
+  results        String // JSON: [{date, expected, lower, upper}]
+}
+
+enum RiskLevel {
+  LOW
+  MODERATE
+  HIGH
+  CRITICAL
+}
+
+model RiskAssessment {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  generatedAt    DateTime     @default(now())
+  riskType       String
+  score          Float
+  level          RiskLevel
+  factors        String // JSON: [{factor, impact}]
+}
+
+model Anomaly {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  transactionId  String
+  transaction    Transaction  @relation(fields: [transactionId], references: [id])
+  detectedAt     DateTime     @default(now())
+  reason         String
+  expectedLow    Float
+  expectedHigh   Float
+  zScore         Float
+  status         String       @default("OPEN") // OPEN | REVIEWED | DISMISSED
+}
+
+// ---------------------------------------------------------------------------
+// Simulation
+// ---------------------------------------------------------------------------
+
+model Scenario {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  name           String
+  type           String // HIRE_EMPLOYEE | PRICE_CHANGE | LOSE_CUSTOMER | ... | STRESS_TEST
+  assumptions    String // JSON of scenario input parameters
+  createdAt      DateTime     @default(now())
+
+  results ScenarioResult[]
+}
+
+model ScenarioResult {
+  id          String   @id @default(cuid())
+  scenarioId  String
+  scenario    Scenario @relation(fields: [scenarioId], references: [id])
+  computedAt  DateTime @default(now())
+  baseline    String // JSON snapshot of baseline projection
+  projected   String // JSON snapshot of scenario projection
+  deltaSummary String // JSON of key deltas (runway, cash, revenue, expenses, risk)
+}
+
+// ---------------------------------------------------------------------------
+// AI + evidence + human-in-the-loop
+// ---------------------------------------------------------------------------
+
+model AIInsight {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  question       String?
+  agent          String // e.g. CASH_FLOW_ANALYST, RISK_ANALYST, FINANCIAL_NARRATOR
+  provider       String // anthropic | openai | google | mock
+  summary        String
+  detail         String
+  groundedFacts  String // JSON structured facts the narration was built from
+
+  evidenceLinks EvidenceLink[]
+  approvals     Approval[]
+}
+
+model EvidenceLink {
+  id            String       @id @default(cuid())
+  insightId     String
+  insight       AIInsight    @relation(fields: [insightId], references: [id])
+  transactionId String?
+  transaction   Transaction? @relation(fields: [transactionId], references: [id])
+  entityType    String // TRANSACTION | INVOICE | METRIC | RISK | ANOMALY
+  entityId      String
+  note          String?
+}
+
+enum ApprovalStatus {
+  SUGGESTED
+  APPROVED
+  EDITED
+  REJECTED
+  EXECUTED
+}
+
+model Approval {
+  id             String         @id @default(cuid())
+  organizationId String
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+  insightId      String?
+  insight        AIInsight?     @relation(fields: [insightId], references: [id])
+  userId         String?
+  user           User?          @relation(fields: [userId], references: [id])
+  action         String
+  status         ApprovalStatus @default(SUGGESTED)
+  reason         String?
+  createdAt      DateTime       @default(now())
+  decidedAt      DateTime?
+}
+
+model AuditEvent {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  userId         String?
+  user           User?        @relation(fields: [userId], references: [id])
+  actor          String
+  action         String
+  entity         String
+  entityId       String
+  previousValue  String?
+  newValue       String?
+  reason         String?
+  requestId      String?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, createdAt])
+}
