@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { getSessionUser } from "@/lib/auth/server";
 import { ok, apiError } from "@/lib/api/respond";
-import { defaultAssumptions, type ScenarioType } from "@/lib/analytics/simulation";
+import { defaultAssumptions, validateAssumptions, type ScenarioType } from "@/lib/analytics/simulation";
 
 const SCENARIO_TYPES: ScenarioType[] = [
   "HIRE_EMPLOYEE", "INCREASE_MARKETING", "PURCHASE_EQUIPMENT", "TAKE_LOAN", "INCREASE_PRICES",
@@ -34,6 +34,11 @@ export async function POST(req: NextRequest) {
 
   const parsed = createSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return apiError("INVALID_SCENARIO", parsed.error.issues[0]?.message ?? "Invalid scenario.", 400);
+
+  if (parsed.data.assumptions) {
+    const errors = validateAssumptions(parsed.data.type, parsed.data.assumptions);
+    if (errors.length > 0) return apiError("INVALID_SCENARIO_ASSUMPTIONS", errors.join("; "), 400);
+  }
 
   const scenario = await prisma.scenario.create({
     data: {

@@ -62,6 +62,86 @@ export function defaultAssumptions(type: ScenarioType): ScenarioAssumptions {
   return { ...DEFAULTS[type] };
 }
 
+export interface AssumptionBound {
+  min: number;
+  max: number;
+}
+
+// Sane bounds per scenario type/field — not arbitrary: each caps the field
+// at the point where the resulting number stops being a plausible business
+// input (e.g. a negative employee count, a >500% price increase). Used by
+// validateAssumptions() so the API rejects nonsensical scenario input with
+// a specific, actionable message instead of silently computing a garbage
+// projection.
+const ASSUMPTION_BOUNDS: Record<ScenarioType, Record<string, AssumptionBound>> = {
+  HIRE_EMPLOYEE: {
+    count: { min: 0, max: 1000 },
+    monthlyCostPerEmployee: { min: 0, max: 10_000_000 },
+    expectedRevenueUpliftPct: { min: -1, max: 5 },
+  },
+  INCREASE_MARKETING: {
+    monthlyIncrease: { min: 0, max: 100_000_000 },
+    expectedRevenueUpliftPct: { min: -1, max: 5 },
+  },
+  PURCHASE_EQUIPMENT: {
+    oneTimeCost: { min: 0, max: 1_000_000_000 },
+    monthlyMaintenanceCost: { min: 0, max: 10_000_000 },
+    expectedEfficiencyGainPct: { min: -1, max: 1 },
+  },
+  TAKE_LOAN: {
+    principal: { min: 0, max: 1_000_000_000 },
+    monthlyRepayment: { min: 0, max: 10_000_000 },
+  },
+  INCREASE_PRICES: {
+    pricePct: { min: -1, max: 5 },
+    expectedVolumeLossPct: { min: -1, max: 1 },
+  },
+  LOSE_TOP_CUSTOMER: {
+    revenueSharePct: { min: 0, max: 1 },
+  },
+  NEW_SUPPLIER_COST: {
+    costIncreasePct: { min: -1, max: 5 },
+  },
+  EXTEND_CUSTOMER_TERMS: {
+    additionalDays: { min: 0, max: 365 },
+    receivablesImpact: { min: 0, max: 1 },
+  },
+  ACCELERATE_COLLECTIONS: {
+    daysAcceleratedRevenue: { min: 0, max: 1 },
+  },
+  REDUCE_DISCRETIONARY_EXPENSES: {
+    reductionPct: { min: 0, max: 1 },
+  },
+  DO_NOTHING: {},
+};
+
+/**
+ * Validates custom scenario assumptions against per-field bounds for the
+ * given scenario type. Returns a list of human-readable error messages
+ * (empty = valid). Rejects: non-finite numbers, unknown assumption keys for
+ * the given type, and any value outside its documented sane range (e.g. a
+ * negative employee count, an impossible >500% price increase).
+ */
+export function validateAssumptions(type: ScenarioType, assumptions: ScenarioAssumptions): string[] {
+  const bounds = ASSUMPTION_BOUNDS[type];
+  const errors: string[] = [];
+  for (const [key, value] of Object.entries(assumptions)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      errors.push(`"${key}" must be a finite number`);
+      continue;
+    }
+    const bound = bounds[key];
+    if (!bound) {
+      errors.push(`"${key}" is not a recognized assumption for scenario type ${type}`);
+      continue;
+    }
+    if (value < bound.min || value > bound.max) {
+      errors.push(`"${key}" must be between ${bound.min} and ${bound.max} (got ${value})`);
+    }
+  }
+  return errors;
+}
+
 export function runScenario(
   baseline: BaselineSnapshot,
   type: ScenarioType,
