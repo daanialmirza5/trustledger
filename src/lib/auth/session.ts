@@ -6,15 +6,6 @@ const DEFAULT_DEV_SECRET = "dev-only-insecure-secret-change-me";
 const SECRET = process.env.AUTH_SECRET || DEFAULT_DEV_SECRET;
 export const SESSION_COOKIE = "trustledger_session";
 
-// Fail fast rather than silently signing production sessions with a
-// publicly-known placeholder secret (anyone could forge a valid cookie).
-if (process.env.NODE_ENV === "production" && SECRET === DEFAULT_DEV_SECRET) {
-  throw new Error(
-    "AUTH_SECRET is unset or still the default placeholder in a production build. " +
-      "Set a real secret (see .env.example) before deploying."
-  );
-}
-
 export interface SessionPayload {
   userId: string;
   organizationId: string;
@@ -25,6 +16,17 @@ export interface SessionPayload {
 let keyPromise: Promise<CryptoKey> | null = null;
 function getKey(): Promise<CryptoKey> {
   if (!keyPromise) {
+    // Checked lazily (on first actual sign/verify) rather than at module
+    // load, so importing this file during `next build`'s page-data
+    // collection — which never signs or verifies anything — can't trip
+    // this. It still fails fast the moment a real request tries to use a
+    // production deployment with the placeholder secret still in place.
+    if (process.env.NODE_ENV === "production" && SECRET === DEFAULT_DEV_SECRET) {
+      throw new Error(
+        "AUTH_SECRET is unset or still the default placeholder in a production build. " +
+          "Set a real secret (see .env.example) before deploying."
+      );
+    }
     keyPromise = crypto.subtle.importKey(
       "raw",
       new TextEncoder().encode(SECRET),

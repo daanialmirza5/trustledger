@@ -13,6 +13,43 @@ owner simulate a decision before making it.
 
 ---
 
+## Recent Engineering Improvements
+
+A follow-up hardening pass addressed the top limitation from the initial
+build — the forecaster's blindness to already-issued, not-yet-paid
+invoices and bills:
+
+- **Forecast now incorporates known receivables and payables.** Outstanding
+  invoices/bills are projected to an expected cash date (using this
+  business's own current aging distribution, not a naive "paid exactly on
+  the due date" guess) and layered onto the historical-extrapolation
+  baseline. The forecast page shows both lines side by side, plus a "how
+  this forecast works" panel and an explicitly-qualitative
+  reliability-by-horizon indicator (it does not claim a statistical
+  confidence level beyond the real, backtested band already shown).
+- **Runway edge cases fixed**: negative cash, near-zero burn, and
+  non-finite inputs no longer produce a negative, unbounded, or NaN/
+  Infinity runway figure.
+- **Broader risk-engine and scenario-engine test coverage**, including
+  threshold-boundary and maximum-stress cases.
+- **Scenario assumptions are now validated** against per-field sane bounds
+  (no negative employee counts, no >500% price increases, etc.) instead of
+  accepting any finite number.
+- **RBAC and API authorization now have real HTTP-level test coverage**
+  (401/403/200) in addition to the existing route-level enforcement.
+- **Session hardening**: the app refuses to start in production with the
+  default placeholder `AUTH_SECRET`, and signature verification uses a
+  constant-time comparison.
+
+See `docs/forecasting.md` and `docs/forecast-evaluation.md` for the
+measured accuracy — this pass improves what the forecast *knows*, not the
+underlying statistical method, and the measured 60-day accuracy in that
+doc predates this change (it has not yet been re-measured with AR/AP
+included; re-running `npm run evaluate:forecast` against a freshly seeded
+database would be the natural next step).
+
+---
+
 ## The Problem
 
 A business owner knows *"I made ₹8 lakh this month."* They usually don't
