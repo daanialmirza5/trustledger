@@ -2,8 +2,18 @@
 // unchanged in both the Node.js runtime (API routes) and the Edge runtime
 // (middleware) — Next.js middleware runs on Edge by default.
 
-const SECRET = process.env.AUTH_SECRET || "dev-only-insecure-secret-change-me";
+const DEFAULT_DEV_SECRET = "dev-only-insecure-secret-change-me";
+const SECRET = process.env.AUTH_SECRET || DEFAULT_DEV_SECRET;
 export const SESSION_COOKIE = "trustledger_session";
+
+// Fail fast rather than silently signing production sessions with a
+// publicly-known placeholder secret (anyone could forge a valid cookie).
+if (process.env.NODE_ENV === "production" && SECRET === DEFAULT_DEV_SECRET) {
+  throw new Error(
+    "AUTH_SECRET is unset or still the default placeholder in a production build. " +
+      "Set a real secret (see .env.example) before deploying."
+  );
+}
 
 export interface SessionPayload {
   userId: string;
@@ -30,6 +40,22 @@ function toBase64Url(bytes: ArrayBuffer): string {
   return Buffer.from(bytes).toString("base64url");
 }
 
+/**
+ * Constant-time string comparison for the HMAC signature check below — a
+ * naive `===` short-circuits on the first differing byte, which leaks how
+ * many leading bytes of a forged signature happened to match via timing.
+ * Fixed-length HMAC-SHA256 output means a length mismatch only happens for
+ * a malformed token, not a sensitive signal, so it's fine to return early.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  let diff = 0;
+  for (let i = 0; i < bufA.length; i++) diff |= bufA[i] ^ bufB[i];
+  return diff === 0;
+}
+
 async function sign(value: string): Promise<string> {
   const key = await getKey();
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
@@ -47,7 +73,7 @@ export async function decodeSession(token: string | undefined | null): Promise<S
   const [json, sig] = token.split(".");
   if (!json || !sig) return null;
   const expected = await sign(json);
-  if (expected !== sig) return null;
+  if (!timingSafeEqual(expected, sig)) return null;
   try {
     return JSON.parse(Buffer.from(json, "base64url").toString("utf8")) as SessionPayload;
   } catch {
