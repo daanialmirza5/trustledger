@@ -41,4 +41,44 @@ describe("forecastCashFlow", () => {
     expect(result.backtest.rmse).toBeGreaterThanOrEqual(0);
     expect(result.backtest.sampleSize).toBe(29);
   });
+
+  it("with no obligations, expected equals modelExpected on every point", () => {
+    const history = buildHistory(30, () => 1000);
+    const result = forecastCashFlow(history, 0, 10);
+    for (const p of result.points) {
+      expect(p.expected).toBe(p.modelExpected);
+      expect(p.knownReceivablesInflow).toBe(0);
+      expect(p.knownPayablesOutflow).toBe(0);
+    }
+    expect(result.method).not.toContain("known-ar-ap");
+  });
+
+  it("layers a known receivable on top of the model extrapolation on its expected date, without altering other days", () => {
+    const history = buildHistory(30, () => 1000);
+    const target = buildHistory(31, () => 1000)[30].date; // day 1 of the forecast horizon
+    const result = forecastCashFlow(history, 0, 10, { receivables: [{ date: target, amount: 50000, label: "test invoice" }] });
+
+    const day1 = result.points[0];
+    expect(day1.date).toBe(target);
+    expect(day1.knownReceivablesInflow).toBe(50000);
+    expect(day1.expected).toBeCloseTo(day1.modelExpected + 50000, 0);
+
+    // The 50000 bump is a one-time inflow but it stays in the cumulative cash
+    // balance going forward — day 2's expected should still be ~50000 above
+    // its own model-only baseline, with no *new* inflow that day.
+    const day2 = result.points[1];
+    expect(day2.knownReceivablesInflow).toBe(0);
+    expect(day2.expected).toBeCloseTo(day2.modelExpected + 50000, 0);
+    expect(result.method).toContain("known-ar-ap");
+  });
+
+  it("layers a known payable as a reduction on its expected date", () => {
+    const history = buildHistory(30, () => 1000);
+    const target = buildHistory(31, () => 1000)[30].date;
+    const result = forecastCashFlow(history, 0, 10, { payables: [{ date: target, amount: 20000, label: "test bill" }] });
+
+    const day1 = result.points[0];
+    expect(day1.knownPayablesOutflow).toBe(20000);
+    expect(day1.expected).toBeCloseTo(day1.modelExpected - 20000, 0);
+  });
 });

@@ -5,6 +5,18 @@ export interface DailyPoint {
   value: number; // net cash movement that day (can be negative)
 }
 
+/** A single known future cash event — an outstanding invoice or bill, not a model guess. */
+export interface KnownObligation {
+  date: string; // YYYY-MM-DD, expected cash date
+  amount: number; // positive
+  label: string;
+}
+
+export interface ObligationsInput {
+  receivables?: KnownObligation[];
+  payables?: KnownObligation[];
+}
+
 export interface ForecastRun {
   method: string;
   points: ForecastPoint[];
@@ -27,6 +39,7 @@ export function forecastCashFlow(
   history: DailyPoint[],
   startingCash: number,
   horizonDays: number,
+  obligations?: ObligationsInput,
   alpha = 0.12,
   beta = 0.05
 ): ForecastRun {
@@ -90,7 +103,23 @@ export function forecastCashFlow(
 
   const lastDate = new Date(sorted[sorted.length - 1].date + "T00:00:00Z");
   const points: ForecastPoint[] = [];
-  let cumulative = startingCash;
+  let modelCumulative = startingCash;
+  let adjustedCumulative = startingCash;
+
+  // Known AR/AP events, bucketed by date. These come from actual open
+  // invoices/bills (see obligations.ts) — not from the statistical model —
+  // and are layered on top of the pure extrapolation below. There is no
+  // double-counting risk: `history` only contains *realized* past cash
+  // movement, so the model has no way to already represent unrealized
+  // future collections/payments on its own.
+  const receivablesByDate = new Map<string, number>();
+  for (const o of obligations?.receivables ?? []) {
+    receivablesByDate.set(o.date, (receivablesByDate.get(o.date) ?? 0) + o.amount);
+  }
+  const payablesByDate = new Map<string, number>();
+  for (const o of obligations?.payables ?? []) {
+    payablesByDate.set(o.date, (payablesByDate.get(o.date) ?? 0) + o.amount);
+  }
 
   // Damped trend (Gardner & McKenzie): the trend's influence on any single
   // future day decays by `dampingPhi` per day out, instead of growing
@@ -103,21 +132,35 @@ export function forecastCashFlow(
     const date = new Date(lastDate);
     date.setUTCDate(date.getUTCDate() + h);
     const dow = date.getUTCDay();
+    const dateKey = date.toISOString().slice(0, 10);
     const dampedTrend = trend * Math.pow(dampingPhi, h);
     const rawDelta = (level + dampedTrend) * (seasonal[dow] || 1);
-    cumulative += rawDelta;
-    // Random-walk-style widening band scaled by rmse and sqrt(horizon).
+    modelCumulative += rawDelta;
+
+    const arInflow = receivablesByDate.get(dateKey) ?? 0;
+    const apOutflow = payablesByDate.get(dateKey) ?? 0;
+    adjustedCumulative += rawDelta + arInflow - apOutflow;
+
+    // Random-walk-style widening band scaled by rmse and sqrt(horizon),
+    // centered on the AR/AP-adjusted expectation.
     const band = rmse * Math.sqrt(h);
     points.push({
-      date: date.toISOString().slice(0, 10),
-      expected: round2(cumulative),
-      lower: round2(cumulative - band),
-      upper: round2(cumulative + band),
+      date: dateKey,
+      expected: round2(adjustedCumulative),
+      lower: round2(adjustedCumulative - band),
+      upper: round2(adjustedCumulative + band),
+      modelExpected: round2(modelCumulative),
+      knownReceivablesInflow: round2(arInflow),
+      knownPayablesOutflow: round2(apOutflow),
     });
   }
 
+  const hasObligations = (obligations?.receivables?.length ?? 0) + (obligations?.payables?.length ?? 0) > 0;
+
   return {
-    method: "damped-holt+day-of-week-seasonality+7d-smoothing",
+    method: hasObligations
+      ? "damped-holt+day-of-week-seasonality+7d-smoothing+known-ar-ap"
+      : "damped-holt+day-of-week-seasonality+7d-smoothing",
     points,
     backtest: { mae: round2(mae), rmse: round2(rmse), sampleSize: residuals.length },
   };

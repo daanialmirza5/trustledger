@@ -4,6 +4,7 @@ import { forecastCashFlow } from "./forecast";
 import { computeRunway } from "./runway";
 import { computeReceivables } from "./receivables";
 import { computePayables } from "./payables";
+import { projectReceivableObligations, projectPayableObligations } from "./obligations";
 import { computeConcentration } from "./concentration";
 import { detectAnomalies, type DetectedAnomaly } from "./anomaly";
 import { computeRiskAssessments, type RiskInputs } from "./risk";
@@ -122,22 +123,31 @@ export async function computeSnapshot(organizationId: string, asOf: Date = new D
 
   const cashFlow30d = computeCashFlow(last30, currentCash - last30.reduce((s, t) => s + (t.type === "INFLOW" ? t.amount : -t.amount), 0), daysAgo(asOf, 30), asOf);
 
-  // Forecast needs a longer history window to fit trend + weekly seasonality.
-  const forecastHistoryTx = allTxUpToNow.filter((t) => t.date >= daysAgo(asOf, 365));
-  const series = dailyNetSeries(forecastHistoryTx);
-  const dailyPoints = Array.from(series.entries()).map(([date, value]) => ({ date, value }));
-  const forecast90d = forecastCashFlow(dailyPoints, currentCash, 90);
-  const forecast90dExpectedDelta = forecast90d.points[forecast90d.points.length - 1].expected - currentCash;
-  const forecast90dLowerDelta = forecast90d.points[forecast90d.points.length - 1].lower - currentCash;
-
-  const avgMonthlyBurn = -((monthlyRevenue - monthlyExpenses));
-  const runway = computeRunway(currentCash, avgMonthlyBurn, forecast90dExpectedDelta, forecast90dLowerDelta);
-
   const invoices = await loadInvoices(organizationId);
   const receivables = computeReceivables(invoices, asOf);
 
   const expenses = await loadExpenses(organizationId);
   const payables = computePayables(expenses, asOf);
+
+  // Forecast needs a longer history window to fit trend + weekly seasonality.
+  // Known outstanding invoices/bills are layered on top of the pure
+  // extrapolation (see obligations.ts) — the forecaster otherwise has no
+  // visibility into cash that's already contractually expected.
+  const forecastHistoryTx = allTxUpToNow.filter((t) => t.date >= daysAgo(asOf, 365));
+  const series = dailyNetSeries(forecastHistoryTx);
+  const dailyPoints = Array.from(series.entries()).map(([date, value]) => ({ date, value }));
+  const forecastHorizonDays = 90;
+  const knownReceivables = projectReceivableObligations(invoices, receivables, asOf, forecastHorizonDays);
+  const knownPayables = projectPayableObligations(expenses, asOf, forecastHorizonDays);
+  const forecast90d = forecastCashFlow(dailyPoints, currentCash, forecastHorizonDays, {
+    receivables: knownReceivables,
+    payables: knownPayables,
+  });
+  const forecast90dExpectedDelta = forecast90d.points[forecast90d.points.length - 1].expected - currentCash;
+  const forecast90dLowerDelta = forecast90d.points[forecast90d.points.length - 1].lower - currentCash;
+
+  const avgMonthlyBurn = -((monthlyRevenue - monthlyExpenses));
+  const runway = computeRunway(currentCash, avgMonthlyBurn, forecast90dExpectedDelta, forecast90dLowerDelta);
 
   const last90 = allTxUpToNow.filter((t) => t.date >= daysAgo(asOf, 90));
   const customerRevenue = new Map<string, { name: string; amount: number }>();

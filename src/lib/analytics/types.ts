@@ -54,4 +54,11 @@ export interface ForecastPoint {
   expected: number;
   lower: number;
   upper: number;
+  // Pure historical-extrapolation figure before known AR/AP are layered in
+  // (equal to `expected` when no obligations are supplied).
+  modelExpected: number;
+  // Known outstanding receivables/payables expected to land on this date —
+  // real data (outstanding invoices/bills), not model output.
+  knownReceivablesInflow: number;
+  knownPayablesOutflow: number;
 }
