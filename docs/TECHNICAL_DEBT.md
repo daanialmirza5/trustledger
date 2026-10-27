@@ -1,7 +1,6 @@
 # TrustLedger — Technical Debt & Architectural Audit
 
 **Repository**: `trustledger`  
-**Status**: Tier 1 Flagship (Vitest + Playwright suites)
 
 ## Prioritized Debt Items
 - **[P1 — High] Plaid / Open Banking API Connectors**: Integrate live bank transaction sync via Plaid or Telleroo webhooks.
